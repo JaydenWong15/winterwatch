@@ -240,6 +240,28 @@
   #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card); font-size: 12px; padding: 6px 9px; border-radius: 6px; max-width: 260px; display: none; }
   .hist-notes { margin-top: 12px; display: grid; gap: 6px; }
 
+  /* ---------- Priority review memo ---------- */
+  #reviewResult:empty { display: none; }
+  #reviewResult { margin-top: 14px; }
+  .memo { border: 1px solid var(--border); border-left: 6px solid var(--accent); border-radius: 12px; padding: 14px 16px; }
+  .memo-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .memo-route { font-size: 22px; font-weight: 800; }
+  .prio-move { font-weight: 800; font-size: 14px; padding: 4px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  .memo h4 { margin: 14px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .memo ul { margin: 0; padding-left: 20px; }
+  .limit { background: var(--warn-soft); border-left: 4px solid var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+  .checklist { display: grid; gap: 4px; margin-top: 12px; font-size: 13px; }
+  .checklist .ok { color: var(--ok); }
+  .checklist .no { color: var(--err); }
+  .decide { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; margin-top: 12px; }
+  @media (max-width: 600px) { .decide { grid-template-columns: 1fr; } }
+  button.approve-btn { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.reject-btn { background: transparent; border-color: var(--err); color: var(--err); }
+  .declog { margin-top: 14px; }
+  .declog .entry { font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--neutral-soft); margin-top: 4px; }
+  .declog .entry b.ap { color: var(--ok); }
+  .declog .entry b.rj { color: var(--err); }
+
   footer { text-align: center; font-size: 12px; color: var(--muted); padding: 0 16px 24px; }
   footer a { color: inherit; }
 </style>
@@ -310,6 +332,13 @@
     <!-- ===== Five winters (history) ===== -->
     <section class="card wide" aria-labelledby="histTitle">
       <h2 id="histTitle">Five winters · Nov–Mar 2020–2025</h2>
+      <div class="row" style="margin-top:0">
+        <button id="reviewBtn" class="big">Priority review</button>
+        <span class="note" style="margin:0">Which route should move up a priority next winter, and what else should we change?</span>
+      </div>
+      <div id="reviewResult" aria-live="polite"></div>
+      <div id="decisionLog"></div>
+      <h3 style="margin-top:20px">The evidence</h3>
       <div id="history"><p class="note">Loading history…</p></div>
     </section>
 
@@ -712,6 +741,50 @@ function historyForAI(h) {
   return `${head}\n\nPER ROUTE:\n${R}\n\nPER DEPOT:\n${D}`;
 }
 
+/* ===== Phase 4: priority review ===== */
+
+// Rank routes by ice on UNTREATED nights: the ice a higher priority could have prevented.
+// Ice on TREATED nights is a route fault (plan section 7), listed separately.
+function priorityEvidence(h) {
+  const ranked = [...h.routes].sort((a, b) =>
+    b.iceUntreatedNights - a.iceUntreatedNights || b.iceUntreated - a.iceUntreated || a.id.localeCompare(b.id));
+  const faults = h.routes.filter(r => r.iceTreated > 0 && r.iceTreated >= 3 * Math.max(1, r.iceUntreated));
+  const lines = ranked.map((r, i) =>
+    `${i + 1}. ${r.id} ${r.name} | P${r.priority}${r.priority === 1 ? " (already P1, cannot move up)" : ""} | ${r.depot}` +
+    ` | ice on UNTREATED nights ${r.iceUntreated} (${r.iceUntreatedNights} nights) | held back for stock ${r.heldStock} | no salt ${r.noSalt}` +
+    ` | ice on TREATED nights ${r.iceTreated} (${r.iceTreatedNights} nights) | runs ${r.runs} | ground <=0 C nights ${r.frostNights}`);
+  const faultLines = faults.map(r =>
+    `${r.id} ${r.name}: ${r.iceTreated} ice incidents on ${r.iceTreatedNights} TREATED nights` +
+    (r.recurringNotes.length ? ` (recurring note: "${r.recurringNotes[0].text}" x${r.recurringNotes[0].n})` : ""));
+  const text = `PRIORITY EVIDENCE (computed by code; ranked by ice on untreated nights):\n${lines.join("\n")}\n\n` +
+    `ICE MAINLY AFTER TREATMENT (route fault, plan section 7 - not a priority case):\n${faultLines.join("\n") || "none"}`;
+  return { ranked, faults, text };
+}
+
+// Check a review answer against the brief's four requirements.
+// sourceText = exactly what the AI was given, so every number it quotes can be traced.
+function checkReview(memo, routeIds, sourceText) {
+  const toNums = s => (String(s).replace(/(\d),(\d{3})/g, "$1$2").match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const allowed = new Set(toNums(sourceText));
+  const ev = Array.isArray(memo.evidence) ? memo.evidence : [];
+  const evChecks = ev.map(e => {
+    const nums = toNums(e.value);
+    const bad = nums.filter(n => !allowed.has(n));
+    return { e, nums, bad, ok: nums.length > 0 && bad.length === 0 };
+  });
+  const goodEv = evChecks.filter(x => x.ok).length;
+  const badNums = evChecks.flatMap(x => x.bad);
+  return [
+    { ok: routeIds.includes(String(memo.route || "").toUpperCase()), label: "Names a route", detail: memo.route ? String(memo.route) : "no route given" },
+    { ok: goodEv >= 2, label: "Two numbers from the summary",
+      detail: goodEv >= 2 ? evChecks.filter(x => x.ok).slice(0, 2).map(x => x.nums.join("/")).join(" and ") + " found in the data"
+            : badNums.length ? "not in the data: " + badNums.join(", ") : `only ${goodEv} traceable number(s)` },
+    { ok: String(memo.limit || "").trim().length >= 15, label: "States a limit of the evidence", detail: memo.limit ? "given" : "missing" },
+    { ok: /^approve\b/i.test(String(memo.approve || "").trim()), label: "Ends with an approve/reject line",
+      detail: !memo.approve ? "missing" : /^approve\b/i.test(String(memo.approve).trim()) ? "given" : "does not start with \"Approve:\"" }
+  ];
+}
+
 /* ---------- LOGIC END ---------- */
 
 const SYSTEM_PROMPT = `You are Winter Watch, a decision-support assistant for the County Cavan roads team (fictional). You advise the Duty Engineer; you never dispatch trucks, write to logs, or mark anything as treated. A person makes every final decision.
@@ -892,15 +965,17 @@ async function loadTonight() {
 
 // --- Call the active AI provider directly from the browser ---
 // Every provider gets the same system prompt + data and must return the same JSON answer shape.
-const JSON_INSTRUCTION = "\n\nReturn ONLY one JSON object (no markdown, no code fences) that matches this JSON Schema:\n" + JSON.stringify(ANSWER_SCHEMA);
+const jsonInstruction = schema => "\n\nReturn ONLY one JSON object (no markdown, no code fences) that matches this JSON Schema:\n" + JSON.stringify(schema);
 
-async function askAI(system, userContent) {
+// opts.schema: answer shape (default: the answer card); opts.effort: thinking effort (default: low)
+async function askAI(system, userContent, opts = {}) {
   const prov = activeProvider();
   const key = load(STORE.key(prov));
   if (!key) throw new Error(`No ${PROVIDERS[prov].label} API key saved. Add it in Settings first.`);
   const model = modelFor(prov);
+  const o = { schema: opts.schema || ANSWER_SCHEMA, effort: opts.effort || "low" };
   const call = { anthropic: callAnthropic, openai: callOpenAI, gemini: callGemini, groq: callGroq }[prov];
-  const r = await call(key, model, system, userContent);
+  const r = await call(key, model, system, userContent, o);
 
   if (!r.text) throw new Error(`${PROVIDERS[prov].label} returned no text (stop reason: ${r.stopReason || "unknown"}).`);
   r.parsed = parseAnswer(r.text);
@@ -929,7 +1004,7 @@ async function postJSON(url, headers, body) {
 }
 
 // Anthropic (Claude): structured outputs + low effort
-async function callAnthropic(key, model, system, userContent) {
+async function callAnthropic(key, model, system, userContent, o) {
   const data = await postJSON("https://api.anthropic.com/v1/messages", {
     "x-api-key": key,
     "anthropic-version": "2023-06-01",
@@ -938,7 +1013,7 @@ async function callAnthropic(key, model, system, userContent) {
     model,
     // Haiku 5.5 thinks before answering by default, and thinking counts toward max_tokens (see F12).
     max_tokens: 16000,
-    output_config: { effort: "low", format: { type: "json_schema", schema: ANSWER_SCHEMA } },
+    output_config: { effort: o.effort, format: { type: "json_schema", schema: o.schema } },
     system,
     messages: [{ role: "user", content: userContent }]
   });
@@ -949,16 +1024,16 @@ async function callAnthropic(key, model, system, userContent) {
 }
 
 // OpenAI and Groq share the same Chat Completions format
-async function callChatCompletions(url, key, model, system, userContent) {
+async function callChatCompletions(url, key, model, system, userContent, o) {
   const base = {
     model,
-    messages: [{ role: "system", content: system + JSON_INSTRUCTION }, { role: "user", content: userContent }],
+    messages: [{ role: "system", content: system + jsonInstruction(o.schema) }, { role: "user", content: userContent }],
     max_completion_tokens: 16000
   };
   const full = {
     ...base,
-    reasoning_effort: "low",
-    response_format: { type: "json_schema", json_schema: { name: "winter_watch_answer", strict: true, schema: ANSWER_SCHEMA } }
+    reasoning_effort: o.effort,
+    response_format: { type: "json_schema", json_schema: { name: "winter_watch_answer", strict: true, schema: o.schema } }
   };
   let data;
   try {
@@ -976,23 +1051,23 @@ async function callChatCompletions(url, key, model, system, userContent) {
   const u = data.usage || {};
   return { text, model: data.model || model, usage: { input_tokens: u.prompt_tokens, output_tokens: u.completion_tokens }, stopReason: choice.finish_reason };
 }
-const callOpenAI = (key, model, system, userContent) =>
-  callChatCompletions("https://api.openai.com/v1/chat/completions", key, model, system, userContent);
-const callGroq = (key, model, system, userContent) =>
-  callChatCompletions("https://api.groq.com/openai/v1/chat/completions", key, model, system, userContent);
+const callOpenAI = (key, model, system, userContent, o) =>
+  callChatCompletions("https://api.openai.com/v1/chat/completions", key, model, system, userContent, o);
+const callGroq = (key, model, system, userContent, o) =>
+  callChatCompletions("https://api.groq.com/openai/v1/chat/completions", key, model, system, userContent, o);
 
 // Google Gemini: generateContent with JSON output
-async function callGemini(key, model, system, userContent) {
+async function callGemini(key, model, system, userContent, o) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const base = {
-    systemInstruction: { parts: [{ text: system + JSON_INSTRUCTION }] },
+    systemInstruction: { parts: [{ text: system + jsonInstruction(o.schema) }] },
     contents: [{ role: "user", parts: [{ text: userContent }] }],
     generationConfig: { responseMimeType: "application/json", maxOutputTokens: 16000 }
   };
   let data;
   try {
     data = await postJSON(url, { "x-goog-api-key": key },
-      { ...base, generationConfig: { ...base.generationConfig, responseJsonSchema: ANSWER_SCHEMA } });
+      { ...base, generationConfig: { ...base.generationConfig, responseJsonSchema: o.schema } });
   } catch (e) {
     if (e.status !== 400) throw e;
     data = await postJSON(url, { "x-goog-api-key": key }, base);   // older models: JSON mode without a schema
@@ -1282,6 +1357,151 @@ function renderHistory(h) {
   $("history").innerHTML = checks + chart + table + extras +
     `<p class="note">Source: history.csv (${t.from} to ${t.to}, ${t.nights} nights × 10 routes), loaded once when the page opened. Summarised in the browser; only this summary is sent to the AI.</p>`;
 }
+
+// ===== Phase 4: priority review (code ranks, AI recommends, page checks, engineer decides) =====
+const REVIEW_QUESTION = "Which route should move up a priority next winter, and what else should we change?";
+
+const REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    route:         { type: "string" },
+    from_priority: { type: "string", enum: ["P1", "P2", "P3"] },
+    to_priority:   { type: "string", enum: ["P1", "P2", "P3"] },
+    headline:      { type: "string" },
+    reasoning:     { type: "string" },
+    evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { label: { type: "string" }, value: { type: "string" } },
+        required: ["label", "value"],
+        additionalProperties: false
+      }
+    },
+    limit:         { type: "string" },
+    other_changes: { type: "array", items: { type: "string" } },
+    approve:       { type: "string" }
+  },
+  required: ["route", "from_priority", "to_priority", "headline", "reasoning", "evidence", "limit", "other_changes", "approve"],
+  additionalProperties: false
+};
+
+// Same safety rules as every other answer, but a different output format
+const REVIEW_SYSTEM = SYSTEM_PROMPT.split("You reply as JSON")[0] + `You are preparing a recommendation for the Senior Engineer, who will approve or reject it. You reply as JSON matching the schema.
+Question: "${REVIEW_QUESTION}"
+- Recommend exactly ONE route to move up exactly one priority level (P3 to P2, or P2 to P1). P1 routes cannot move up.
+- Base the choice on ice on UNTREATED nights (see PRIORITY EVIDENCE): that is the ice a higher priority could prevent.
+- Ice on TREATED nights is a fault on the route (plan section 7). Never use it to justify a priority change; recommend a site fix instead (under other_changes).
+- evidence: exactly 2 items. Each value must be a number copied exactly from the data you were given (e.g. "19"), with a label saying what it counts.
+- limit: one honest limit of this evidence (for example: small counts, only five winters, ice depends on someone reporting it, salt shortages also affected decisions).
+- other_changes: 1-3 other changes, each tied to a figure from the data (for example depot capacity or a route fault).
+- headline: at most 12 words. reasoning: 2-3 short sentences.
+- approve: one line starting "Approve:" that the Senior Engineer can approve or reject.`;
+
+async function runReview() {
+  const btn = $("reviewBtn");
+  btn.disabled = true;
+  const out = $("reviewResult");
+  out.innerHTML = `<div class="question-echo">Preparing the priority review…</div>`;
+  try {
+    const [h, plan] = await Promise.all([HISTORY, fetchText(SOURCES.plan)]);
+    const ev = priorityEvidence(h);
+    const dataText = historyForAI(h) + "\n\n" + ev.text;
+    const userContent = `<plan>\n${plan}\n</plan>\n\n<data>\n${dataText}\n</data>\n\nQUESTION FROM THE SENIOR ENGINEER:\n${REVIEW_QUESTION}`;
+    const r = await askAI(REVIEW_SYSTEM, userContent, { schema: REVIEW_SCHEMA, effort: "medium" });
+    if (!r.parsed) {
+      out.innerHTML = `<div class="answer">${esc(r.text)}</div><div class="answer err">The answer was not in the expected format, so it could not be checked.</div>`;
+      return;
+    }
+    const checks = checkReview(r.parsed, h.routes.map(x => x.id), dataText);
+    out.innerHTML = renderMemo(r.parsed, checks, r);
+    wireDecision(r.parsed, r);
+  } catch (e) {
+    out.innerHTML = `<div class="answer err">Priority review failed: ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderMemo(m, checks, r) {
+  const u = r.usage || {};
+  const passed = checks.filter(c => c.ok).length;
+  return `
+    <div class="question-echo">Q: ${esc(REVIEW_QUESTION)}</div>
+    <div class="memo">
+      <div class="memo-top">
+        <span class="memo-route">${esc(m.route)}</span>
+        <span class="prio-move">${esc(m.from_priority)} → ${esc(m.to_priority)}</span>
+        <span class="headline">${esc(m.headline)}</span>
+      </div>
+      <p class="text">${esc(m.reasoning)}</p>
+      <div class="tiles">${(m.evidence || []).slice(0, 2).map(e =>
+        `<div class="tile"><div class="val">${esc(e.value)}</div><div class="lab">${esc(e.label)}</div></div>`).join("")}</div>
+      <h4>Limit of the evidence</h4>
+      <div class="limit">${esc(m.limit)}</div>
+      ${(m.other_changes || []).length ? `<h4>What else should change</h4><ul>${m.other_changes.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+      <div class="approve">${esc(m.approve)}</div>
+
+      <h4>Brief requirements · ${passed}/4</h4>
+      <div class="checklist">${checks.map(c =>
+        `<div><span class="${c.ok ? "ok" : "no"}">${c.ok ? "✔" : "✖"}</span> ${esc(c.label)} <span class="lab">(${esc(c.detail)})</span></div>`).join("")}</div>
+
+      <h4>Senior Engineer's decision</h4>
+      <div class="decide">
+        <input id="decBy" type="text" placeholder="Your name or role" autocomplete="off">
+        <input id="decWhy" type="text" placeholder="Reason (optional)" autocomplete="off">
+      </div>
+      <div class="row">
+        <button id="decApprove" class="approve-btn">Approve</button>
+        <button id="decReject" class="reject-btn">Reject</button>
+        <span id="decStatus" class="status" style="margin:0"></span>
+      </div>
+    </div>
+    <div class="meta">${esc(PROVIDERS[r.provider].label)} · ${esc(r.model)} · effort medium · tokens in ${u.input_tokens ?? "?"} / out ${u.output_tokens ?? "?"}</div>`;
+}
+
+// Decision log: kept in this browser only
+const DECISIONS_KEY = "winterwatch.decisions";
+function loadDecisions() { try { return JSON.parse(load(DECISIONS_KEY) || "[]"); } catch (e) { return []; } }
+
+function wireDecision(m, r) {
+  const record = verdict => {
+    const by = $("decBy").value.trim();
+    if (!by) { setStatus($("decStatus"), "Add your name or role first.", "err"); $("decBy").focus(); return; }
+    const list = loadDecisions();
+    list.unshift({
+      when: new Date().toLocaleString("en-IE", { timeZone: "Europe/Dublin", dateStyle: "medium", timeStyle: "short" }),
+      verdict, by, why: $("decWhy").value.trim(),
+      route: m.route, move: `${m.from_priority} → ${m.to_priority}`, recommendation: m.approve,
+      ai: `${PROVIDERS[r.provider].label} · ${r.model}`
+    });
+    if (!store(DECISIONS_KEY, JSON.stringify(list.slice(0, 50)))) { setStatus($("decStatus"), "Could not save: browser storage is blocked.", "err"); return; }
+    setStatus($("decStatus"), verdict === "approved" ? "Approved and recorded." : "Rejected and recorded.", "ok");
+    $("decApprove").disabled = $("decReject").disabled = true;
+    renderDecisionLog();
+  };
+  $("decApprove").addEventListener("click", () => record("approved"));
+  $("decReject").addEventListener("click", () => record("rejected"));
+}
+
+function renderDecisionLog() {
+  const list = loadDecisions();
+  $("decisionLog").innerHTML = list.length ? `
+    <div class="declog">
+      <h3>Decisions recorded <span class="lab">(this browser only)</span></h3>
+      ${list.map(d => `<div class="entry">${esc(d.when)} · <b class="${d.verdict === "approved" ? "ap" : "rj"}">${d.verdict === "approved" ? "APPROVED" : "REJECTED"}</b>
+        by ${esc(d.by)} · ${esc(d.route)} ${esc(d.move)}${d.why ? ` · reason: ${esc(d.why)}` : ""}
+        <br><span class="lab">AI recommendation (${esc(d.ai)}): ${esc(d.recommendation)}</span></div>`).join("")}
+      <div class="row"><button id="clearLog" class="ghost">Clear log</button></div>
+    </div>` : "";
+  const c = $("clearLog");
+  if (c) c.addEventListener("click", () => {
+    if (confirm("Delete all recorded decisions from this browser?")) { remove(DECISIONS_KEY); renderDecisionLog(); }
+  });
+}
+
+$("reviewBtn").addEventListener("click", runReview);
+renderDecisionLog();
 
 // Hover tooltip for chart segments
 document.addEventListener("mousemove", e => {
