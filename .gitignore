@@ -1,3 +1,8 @@
 # Private working notes: kept on this computer, never uploaded
 FLAGS-LOG.md
 CHANGES-LOG.md
+
+# Cloudflare tool's local state
+worker/.wrangler/
+worker/.dev.vars
+node_modules/

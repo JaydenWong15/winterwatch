@@ -1,0 +1,10 @@
+# Cloudflare Worker config for the Winter Watch proxy.
+# The Anthropic key is NOT here: it is set in the Cloudflare dashboard as the secret ANTHROPIC_API_KEY.
+name = "winterwatch-proxy"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+# KV store used only for the per-visitor hourly question counts
+[[kv_namespaces]]
+binding = "RATE"
+id = "640e6c494e12407a95e38ef843987947"

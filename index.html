@@ -279,6 +279,7 @@
 
   footer { text-align: center; font-size: 12px; color: var(--muted); padding: 0 16px 24px; }
   footer a { color: inherit; }
+  .linkbtn { background: none; border: 0; padding: 0; font: inherit; font-weight: 400; color: inherit; text-decoration: underline; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -297,7 +298,7 @@
   <div class="wrap grid">
 
     <!-- ===== Settings: Anthropic only; folds into a bar once a key is saved ===== -->
-    <details class="card settings" id="settingsBox">
+    <details class="card settings" id="settingsBox" hidden>
       <summary class="settings-bar">
         <span class="gear" aria-hidden="true">⚙</span><b>Settings</b>
         <span id="setSummary" class="set-sum"></span>
@@ -385,6 +386,7 @@
 
 <footer>
   Practice build · Mock CA2 · A person makes the final gritting decision.<br>
+  <button id="ownKeyLink" class="linkbtn">Use your own API key</button> ·
   Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0).
 </footer>
 
@@ -923,7 +925,8 @@ function setStatus(el, text, kind) { el.textContent = text; el.className = "stat
 function refreshKeyStatus() {
   const hasKey = !!load(STORE.key(PROV));
   $("keyDot").classList.toggle("on", hasKey);
-  $("keyPill").textContent = hasKey ? "Anthropic · " + modelFor(PROV) : "No key saved";
+  $("keyPill").textContent = hasKey ? "Own key · " + modelFor(PROV) : "Shared access · " + PROVIDERS[PROV].model;
+  $("keyDot").classList.add("on");   // both modes can answer
 }
 
 // openByKey: true = open the panel if there is no key yet, closed if there is one
@@ -937,8 +940,7 @@ function refreshSettings(openByKey) {
   $("priceOut").value = pr ? pr.out : "";
   $("setSummary").innerHTML = has
     ? `Anthropic · ${esc(modelFor(PROV))} · <span class="ok">key saved ✔</span>`
-    : `<span class="no">No key yet. Add your Anthropic API key</span>`;
-  if (openByKey) $("settingsBox").open = !has;
+    : `No own key: questions use the shared access (${esc(PROVIDERS[PROV].model)})`;
   refreshKeyStatus();
 }
 
@@ -962,7 +964,15 @@ $("forgetBtn").addEventListener("click", () => {
   $("settingsBox").open = true;
 });
 
-refreshSettings(true);
+refreshSettings();
+
+// Settings stay hidden: visitors use the shared access. The footer link shows them (own key, Part 1 of the brief).
+$("ownKeyLink").addEventListener("click", () => {
+  const box = $("settingsBox");
+  box.hidden = !box.hidden;
+  if (!box.hidden) { box.open = true; box.scrollIntoView({ behavior: "smooth", block: "start" }); $("apiKey").focus(); }
+  $("ownKeyLink").textContent = box.hidden ? "Use your own API key" : "Hide API key settings";
+});
 
 // --- Fetch all four sources fresh (no cache) ---
 async function fetchText(url) {
@@ -988,8 +998,8 @@ async function loadTonight() {
 async function askAI(system, userContent, opts = {}) {
   const prov = activeProvider();
   const key = load(STORE.key(prov));
-  if (!key) throw new Error(`No ${PROVIDERS[prov].label} API key saved. Add it in Settings first.`);
-  const model = modelFor(prov);
+  // Own key saved in this browser -> call Anthropic directly. No key -> shared access through the Worker (fixed model).
+  const model = key ? modelFor(prov) : PROVIDERS[prov].model;
   const o = { schema: opts.schema || ANSWER_SCHEMA, effort: opts.effort || "low" };
   const r = await callAnthropic(key, model, system, userContent, o);
 
@@ -1018,12 +1028,16 @@ async function postJSON(url, headers, body) {
 }
 
 // Anthropic (Claude): structured outputs + low effort
+// Shared access: a Cloudflare Worker holds the owner's key as a secret (never in this page or on GitHub).
+// It only answers this page, only allows claude-haiku-5-5, and limits each visitor to 20 questions an hour.
+const WORKER_URL = "https://winterwatch-proxy.jaydenwong15.workers.dev/v1/messages";
+
 async function callAnthropic(key, model, system, userContent, o) {
-  const data = await postJSON("https://api.anthropic.com/v1/messages", {
-    "x-api-key": key,
-    "anthropic-version": "2023-06-01",
-    "anthropic-dangerous-direct-browser-access": "true"
-  }, {
+  const url = key ? "https://api.anthropic.com/v1/messages" : WORKER_URL;
+  const headers = key
+    ? { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
+    : {};
+  const data = await postJSON(url, headers, {
     model,
     // Haiku 5.5 thinks before answering by default, and thinking counts toward max_tokens (see F12).
     max_tokens: 16000,
