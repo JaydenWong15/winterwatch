@@ -153,6 +153,20 @@
   .b-none  { background: var(--neutral-soft); color: var(--muted); }
   .flagnote { color: var(--err); font-weight: 600; }
 
+  /* ---------- Provider tabs ---------- */
+  .tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: var(--neutral-soft); padding: 4px; border-radius: 10px; }
+  .tab { background: transparent; color: var(--muted); border: 0; padding: 6px 4px; font-size: 13px; font-weight: 600; border-radius: 7px; display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap; }
+  .tab.on { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+  .tab .kdot { color: var(--ok); font-size: 10px; }
+  .tab .act { font-size: 10px; font-weight: 700; color: var(--accent-text); background: var(--accent); border-radius: 999px; padding: 0 6px; }
+  .prov-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; }
+  .prov-name { font-weight: 700; }
+  .tested { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .tested.yes { background: var(--ok-soft); color: var(--ok); }
+  .tested.no { background: var(--warn-soft); color: var(--warn); }
+  label.use { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--text); font-size: 14px; cursor: pointer; }
+  label.use input { width: auto; }
+
   /* ---------- Answer card (structured AI answer) ---------- */
   .acard { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--card); border-left: 6px solid var(--v, var(--accent)); }
   .acard-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -245,27 +259,34 @@
 <main>
   <div class="wrap grid">
 
-    <!-- ===== Settings panel ===== -->
+    <!-- ===== Settings panel: one tab per AI provider ===== -->
     <section class="card" aria-labelledby="settingsTitle">
       <h2 id="settingsTitle">Settings</h2>
 
-      <label for="provider">Provider</label>
-      <select id="provider" disabled>
-        <option value="anthropic">Anthropic (Claude)</option>
-      </select>
+      <div class="tabs" role="tablist" aria-label="AI provider" id="provTabs"></div>
 
-      <label for="model">Model</label>
-      <input id="model" type="text" spellcheck="false">
+      <div id="provPanel" role="tabpanel">
+        <div class="prov-head">
+          <span id="provName" class="prov-name"></span>
+          <span id="provTested" class="tested"></span>
+        </div>
 
-      <label for="apiKey">API key</label>
-      <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your Anthropic API key">
+        <label for="model">Model</label>
+        <input id="model" type="text" spellcheck="false">
 
-      <div class="row">
-        <button id="saveBtn">Save</button>
-        <button id="forgetBtn" class="ghost">Forget key</button>
+        <label for="apiKey">API key</label>
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
+
+        <div class="row">
+          <button id="saveBtn">Save</button>
+          <button id="forgetBtn" class="ghost">Forget key</button>
+        </div>
+
+        <label class="use"><input type="radio" name="useProv" id="useProv"> Use this provider</label>
       </div>
+
       <div id="settingsStatus" class="status" role="status"></div>
-      <p class="note">Your key is stored only in this browser (localStorage). It is never written into the code or uploaded to GitHub.</p>
+      <p class="note">Active: <b id="activeName"></b> · ● = key saved.<br>Keys are stored only in this browser (localStorage). They are never written into the code or uploaded to GitHub.</p>
     </section>
 
     <!-- ===== Tonight's call + question box ===== -->
@@ -308,10 +329,20 @@
    Phase 2 - Tonight's call (fresh data, rules in JS, AI explains)
    ========================================================= */
 
-const DEFAULT_MODEL = "claude-haiku-5-5";
-const STORE_KEY   = "winterwatch.apiKey";
-const STORE_MODEL = "winterwatch.model";
-
+// Four AI providers. Each keeps its own model and key in this browser only.
+// Placeholders deliberately avoid real key prefixes, so a repo search for the first characters of a key finds nothing.
+const PROVIDERS = {
+  anthropic: { label: "Anthropic", full: "Anthropic (Claude)", model: "claude-haiku-5-5",      keyHint: "Paste your Anthropic API key" },
+  openai:    { label: "OpenAI",    full: "OpenAI",             model: "gpt-5-nano",            keyHint: "Paste your OpenAI API key" },
+  gemini:    { label: "Gemini",    full: "Google Gemini",      model: "gemini-3.5-flash-lite", keyHint: "Paste your Google AI Studio API key" },
+  groq:      { label: "Groq",      full: "Groq",               model: "openai/gpt-oss-20b",    keyHint: "Paste your Groq API key" }
+};
+const STORE = {
+  active: "winterwatch.provider",
+  key:    p => "winterwatch.key." + p,
+  model:  p => "winterwatch.model." + p,
+  tested: p => "winterwatch.tested." + p
+};
 const SOURCES = {
   tonight: "https://bdaib-hub.pages.dev/data/winter/tonight.csv",
   routes:  "https://bdaib-hub.pages.dev/data/winter/routes.csv",
@@ -764,38 +795,81 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// --- Settings ---
-function refreshKeyStatus() {
-  const hasKey = !!load(STORE_KEY);
-  $("keyDot").classList.toggle("on", hasKey);
-  $("keyPill").textContent = hasKey ? "Key saved · " + ($("model").value || DEFAULT_MODEL) : "No key saved";
-}
+// --- Settings: one tab per provider ---
+// One-time move of the Phase 1 single key/model into the Anthropic slot
+(function migrateOldSettings() {
+  const oldKey = load("winterwatch.apiKey"), oldModel = load("winterwatch.model");
+  if (oldKey && !load(STORE.key("anthropic"))) store(STORE.key("anthropic"), oldKey);
+  if (oldModel && !load(STORE.model("anthropic"))) store(STORE.model("anthropic"), oldModel);
+  if (oldKey) remove("winterwatch.apiKey");
+  if (oldModel) remove("winterwatch.model");
+})();
+
+function activeProvider() { const p = load(STORE.active); return PROVIDERS[p] ? p : "anthropic"; }
+function modelFor(p) { return load(STORE.model(p)) || PROVIDERS[p].model; }
+let shownTab = activeProvider();   // the tab on screen (not necessarily the active one)
+
 function setStatus(el, text, kind) { el.textContent = text; el.className = "status" + (kind ? " " + kind : ""); }
 
-$("model").value = load(STORE_MODEL) || DEFAULT_MODEL;
-if (load(STORE_KEY)) $("apiKey").placeholder = "Key saved (hidden)";
-refreshKeyStatus();
+function refreshKeyStatus() {
+  const act = activeProvider();
+  const hasKey = !!load(STORE.key(act));
+  $("keyDot").classList.toggle("on", hasKey);
+  $("keyPill").textContent = hasKey ? PROVIDERS[act].label + " · " + modelFor(act) : "No key for " + PROVIDERS[act].label;
+}
+
+function renderTabs() {
+  const act = activeProvider();
+  $("provTabs").innerHTML = Object.entries(PROVIDERS).map(([id, p]) =>
+    `<button role="tab" class="tab${id === shownTab ? " on" : ""}" aria-selected="${id === shownTab}" data-prov="${id}">` +
+    `${esc(p.label)}${load(STORE.key(id)) ? ' <span class="kdot" title="Key saved">●</span>' : ""}` +
+    `${id === act ? '<span class="act">active</span>' : ""}</button>`).join("");
+  const p = PROVIDERS[shownTab];
+  const tested = load(STORE.tested(shownTab));
+  $("provName").textContent = p.full;
+  $("provTested").textContent = tested ? "tested ✔" : "not yet tested";
+  $("provTested").className = "tested " + (tested ? "yes" : "no");
+  $("model").value = modelFor(shownTab);
+  $("apiKey").value = "";
+  $("apiKey").placeholder = load(STORE.key(shownTab)) ? "Key saved (hidden)" : p.keyHint;
+  $("useProv").checked = shownTab === act;
+  $("activeName").textContent = PROVIDERS[act].full + " · " + modelFor(act);
+  refreshKeyStatus();
+}
+
+$("provTabs").addEventListener("click", e => {
+  const b = e.target.closest("[data-prov]");
+  if (!b) return;
+  shownTab = b.dataset.prov;
+  setStatus($("settingsStatus"), "");
+  renderTabs();
+});
 
 $("saveBtn").addEventListener("click", () => {
   const key = $("apiKey").value.trim();
-  const model = $("model").value.trim() || DEFAULT_MODEL;
-  store(STORE_MODEL, model);
-  if (key) {
-    if (!store(STORE_KEY, key)) { setStatus($("settingsStatus"), "Could not save: browser storage is blocked.", "err"); return; }
-    $("apiKey").value = "";
-    $("apiKey").placeholder = "Key saved (hidden)";
+  store(STORE.model(shownTab), $("model").value.trim() || PROVIDERS[shownTab].model);
+  if (key && !store(STORE.key(shownTab), key)) {
+    setStatus($("settingsStatus"), "Could not save: browser storage is blocked.", "err");
+    return;
   }
-  setStatus($("settingsStatus"), load(STORE_KEY) ? "Saved." : "Model saved, but no API key yet.", load(STORE_KEY) ? "ok" : "err");
-  refreshKeyStatus();
+  const has = !!load(STORE.key(shownTab));
+  setStatus($("settingsStatus"), has ? PROVIDERS[shownTab].label + " saved." : "Model saved, but no " + PROVIDERS[shownTab].label + " key yet.", has ? "ok" : "err");
+  renderTabs();
 });
 
 $("forgetBtn").addEventListener("click", () => {
-  remove(STORE_KEY);
-  $("apiKey").value = "";
-  $("apiKey").placeholder = "Paste your Anthropic API key";
-  setStatus($("settingsStatus"), "Key removed from this browser.", "ok");
-  refreshKeyStatus();
+  remove(STORE.key(shownTab));
+  setStatus($("settingsStatus"), PROVIDERS[shownTab].label + " key removed from this browser.", "ok");
+  renderTabs();
 });
+
+$("useProv").addEventListener("change", () => {
+  store(STORE.active, shownTab);
+  setStatus($("settingsStatus"), "Now using " + PROVIDERS[shownTab].full + ".", "ok");
+  renderTabs();
+});
+
+renderTabs();
 
 // --- Fetch all four sources fresh (no cache) ---
 async function fetchText(url) {
@@ -816,46 +890,119 @@ async function loadTonight() {
   return { routes, depots, plan: planTxt, forecast, generatedAt, result: analyse(routes, depots, forecast) };
 }
 
-// --- Call Anthropic directly from the browser ---
-async function askClaude(system, userContent) {
-  const key = load(STORE_KEY);
-  if (!key) throw new Error("No API key saved. Add it in Settings first.");
-  const model = load(STORE_MODEL) || DEFAULT_MODEL;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
-    body: JSON.stringify({
-      model,
-      // Haiku 5.5 thinks before answering by default, and thinking counts toward max_tokens.
-      // 1024 was too small: hard questions used it all on thinking and returned no text.
-      max_tokens: 16000,
-      output_config: {
-        effort: "low",                                        // explaining a computed table needs little thinking
-        format: { type: "json_schema", schema: ANSWER_SCHEMA } // structured answer the page can draw as a card
-      },
-      system,
-      messages: [{ role: "user", content: userContent }]
-    })
-  });
+// --- Call the active AI provider directly from the browser ---
+// Every provider gets the same system prompt + data and must return the same JSON answer shape.
+const JSON_INSTRUCTION = "\n\nReturn ONLY one JSON object (no markdown, no code fences) that matches this JSON Schema:\n" + JSON.stringify(ANSWER_SCHEMA);
+
+async function askAI(system, userContent) {
+  const prov = activeProvider();
+  const key = load(STORE.key(prov));
+  if (!key) throw new Error(`No ${PROVIDERS[prov].label} API key saved. Add it in Settings first.`);
+  const model = modelFor(prov);
+  const call = { anthropic: callAnthropic, openai: callOpenAI, gemini: callGemini, groq: callGroq }[prov];
+  const r = await call(key, model, system, userContent);
+
+  if (!r.text) throw new Error(`${PROVIDERS[prov].label} returned no text (stop reason: ${r.stopReason || "unknown"}).`);
+  r.parsed = parseAnswer(r.text);
+  r.provider = prov;
+  store(STORE.tested(prov), "1");   // a real answer came back: mark this provider as tested in this browser
+  renderTabs();
+  return r;
+}
+
+// Accept plain JSON, or JSON wrapped in a code fence
+function parseAnswer(text) {
+  const clean = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  try { return JSON.parse(clean); } catch (e) { return null; }
+}
+
+async function postJSON(url, headers, body) {
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data.error && data.error.message) || ("HTTP " + res.status));
+  if (!res.ok) {
+    const msg = (data.error && (data.error.message || data.error)) || ("HTTP " + res.status);
+    const err = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+// Anthropic (Claude): structured outputs + low effort
+async function callAnthropic(key, model, system, userContent) {
+  const data = await postJSON("https://api.anthropic.com/v1/messages", {
+    "x-api-key": key,
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true"
+  }, {
+    model,
+    // Haiku 5.5 thinks before answering by default, and thinking counts toward max_tokens (see F12).
+    max_tokens: 16000,
+    output_config: { effort: "low", format: { type: "json_schema", schema: ANSWER_SCHEMA } },
+    system,
+    messages: [{ role: "user", content: userContent }]
+  });
+  if (data.stop_reason === "refusal") throw new Error("The model declined to answer this question (stop reason: refusal).");
   const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
-  if (data.stop_reason === "refusal") {
-    throw new Error("The model declined to answer this question (stop reason: refusal).");
+  if (!text && data.stop_reason === "max_tokens") throw new Error("The model ran out of tokens before writing an answer (stop reason: max_tokens).");
+  return { text, model: data.model || model, usage: data.usage || {}, stopReason: data.stop_reason };
+}
+
+// OpenAI and Groq share the same Chat Completions format
+async function callChatCompletions(url, key, model, system, userContent) {
+  const base = {
+    model,
+    messages: [{ role: "system", content: system + JSON_INSTRUCTION }, { role: "user", content: userContent }],
+    max_completion_tokens: 16000
+  };
+  const full = {
+    ...base,
+    reasoning_effort: "low",
+    response_format: { type: "json_schema", json_schema: { name: "winter_watch_answer", strict: true, schema: ANSWER_SCHEMA } }
+  };
+  let data;
+  try {
+    data = await postJSON(url, { Authorization: "Bearer " + key }, full);
+  } catch (e) {
+    if (e.status !== 400) throw e;
+    // Some models reject reasoning_effort or json_schema: retry once with plain JSON mode
+    data = await postJSON(url, { Authorization: "Bearer " + key }, { ...base, response_format: { type: "json_object" } });
   }
-  if (!text) {
-    throw new Error(data.stop_reason === "max_tokens"
-      ? "The model ran out of tokens before writing an answer (stop reason: max_tokens). Try again or ask a shorter question."
-      : "The model returned no text (stop reason: " + (data.stop_reason || "unknown") + ").");
+  const choice = (data.choices || [])[0] || {};
+  const msg = choice.message || {};
+  if (msg.refusal) throw new Error("The model declined to answer: " + msg.refusal);
+  const text = (msg.content || "").trim();
+  if (!text && choice.finish_reason === "length") throw new Error("The model ran out of tokens before writing an answer (finish reason: length).");
+  const u = data.usage || {};
+  return { text, model: data.model || model, usage: { input_tokens: u.prompt_tokens, output_tokens: u.completion_tokens }, stopReason: choice.finish_reason };
+}
+const callOpenAI = (key, model, system, userContent) =>
+  callChatCompletions("https://api.openai.com/v1/chat/completions", key, model, system, userContent);
+const callGroq = (key, model, system, userContent) =>
+  callChatCompletions("https://api.groq.com/openai/v1/chat/completions", key, model, system, userContent);
+
+// Google Gemini: generateContent with JSON output
+async function callGemini(key, model, system, userContent) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const base = {
+    systemInstruction: { parts: [{ text: system + JSON_INSTRUCTION }] },
+    contents: [{ role: "user", parts: [{ text: userContent }] }],
+    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 16000 }
+  };
+  let data;
+  try {
+    data = await postJSON(url, { "x-goog-api-key": key },
+      { ...base, generationConfig: { ...base.generationConfig, responseJsonSchema: ANSWER_SCHEMA } });
+  } catch (e) {
+    if (e.status !== 400) throw e;
+    data = await postJSON(url, { "x-goog-api-key": key }, base);   // older models: JSON mode without a schema
   }
-  let parsed = null;
-  try { parsed = JSON.parse(text); } catch (e) { /* fall back to showing plain text */ }
-  return { text, parsed, model: data.model || model, usage: data.usage || {}, stopReason: data.stop_reason };
+  if (data.promptFeedback && data.promptFeedback.blockReason) throw new Error("Gemini blocked the request: " + data.promptFeedback.blockReason);
+  const cand = (data.candidates || [])[0] || {};
+  const text = ((cand.content && cand.content.parts) || []).filter(p => !p.thought && p.text).map(p => p.text).join("").trim();
+  if (!text && cand.finishReason === "MAX_TOKENS") throw new Error("The model ran out of tokens before writing an answer (finish reason: MAX_TOKENS).");
+  const u = data.usageMetadata || {};
+  return { text, model: data.modelVersion || model, usage: { input_tokens: u.promptTokenCount, output_tokens: u.candidatesTokenCount }, stopReason: cand.finishReason };
 }
 
 // --- Render helpers ---
@@ -1038,13 +1185,13 @@ async function run(question, mode) {
   let html = "";
   let parsed = null;
   try {
-    const r = await askClaude(SYSTEM_PROMPT, userContent);
+    const r = await askAI(SYSTEM_PROMPT, userContent);
     parsed = r.parsed;
     html = parsed ? answerCard(parsed, question, mode === "overview")
                   : `<div class="question-echo">Q: ${esc(question)}</div><div class="answer">${esc(r.text)}</div>`;
     const u = r.usage || {};
-    html += `<div class="meta">Model: ${esc(r.model)} · tokens in ${u.input_tokens ?? "?"} / out ${u.output_tokens ?? "?"}` +
-      (r.stopReason && r.stopReason !== "end_turn" ? ` · stop reason: ${esc(r.stopReason)}` : "") + `</div>`;
+    html += `<div class="meta">${esc(PROVIDERS[r.provider].label)} · ${esc(r.model)} · tokens in ${u.input_tokens ?? "?"} / out ${u.output_tokens ?? "?"}` +
+      (r.stopReason && !["end_turn", "stop", "STOP"].includes(r.stopReason) ?` · stop reason: ${esc(r.stopReason)}` : "") + `</div>`;
   } catch (e) {
     html = `<div class="question-echo">Q: ${esc(question)}</div><div class="answer err">AI error: ${esc(e.message)} — the computed data below is still valid.</div>`;
   }
