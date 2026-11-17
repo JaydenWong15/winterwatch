@@ -144,7 +144,7 @@
   th { background: var(--neutral-soft); font-weight: 600; font-size: 12px; color: var(--muted); }
   tr:last-child td { border-bottom: 0; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  td.wrap { white-space: normal; min-width: 180px; }
+  td.wrap { white-space: normal; min-width: 300px; }
   .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--warn-soft); color: var(--warn); margin-left: 4px; }
   .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .b-treat { background: var(--accent-soft); color: var(--accent); }
@@ -197,6 +197,34 @@
   tr.hl td { background: var(--accent-soft); }
   details.more { margin-top: 14px; }
   details.more summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent); padding: 6px 0; }
+
+  /* ---------- Five winters ---------- */
+  :root { --s-treated: #2a78d6; --s-untreated: #eb6834; }                  /* validated categorical pair (light) */
+  @media (prefers-color-scheme: dark) { :root { --s-treated: #3987e5; --s-untreated: #d95926; } }  /* validated (dark) */
+  .grid > .wide { grid-column: 2; }
+  @media (max-width: 820px) { .grid > .wide { grid-column: 1; } }
+  .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .check { border-radius: 10px; padding: 8px 12px; background: var(--neutral-soft); }
+  .check .val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .check .lab { font-size: 12px; color: var(--muted); }
+  .check .ok { color: var(--ok); font-weight: 700; font-size: 12px; }
+  .check .bad { color: var(--err); font-weight: 700; font-size: 12px; }
+  .chart-title { font-size: 14px; font-weight: 600; margin: 18px 0 2px; }
+  .chart-sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .bars { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 6px 10px; align-items: center; }
+  .bars .lbl { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bars .lbl small { color: var(--muted); }
+  .track { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+  .stack { display: flex; gap: 2px; height: 14px; }
+  .seg { height: 100%; min-width: 0; cursor: default; }
+  .seg:last-child { border-radius: 0 4px 4px 0; }
+  .seg.t { background: var(--s-treated); }
+  .seg.u { background: var(--s-untreated); }
+  .track .n { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .key { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0 4px; }
+  .key i { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card); font-size: 12px; padding: 6px 9px; border-radius: 6px; max-width: 260px; display: none; }
+  .hist-notes { margin-top: 12px; display: grid; gap: 6px; }
 
   footer { text-align: center; font-size: 12px; color: var(--muted); padding: 0 16px 24px; }
   footer a { color: inherit; }
@@ -258,8 +286,15 @@
       <div id="result" aria-live="polite"></div>
     </section>
 
+    <!-- ===== Five winters (history) ===== -->
+    <section class="card wide" aria-labelledby="histTitle">
+      <h2 id="histTitle">Five winters · Nov–Mar 2020–2025</h2>
+      <div id="history"><p class="note">Loading history…</p></div>
+    </section>
+
   </div>
 </main>
+<div id="tip" role="tooltip"></div>
 
 <footer>
   Practice build · Mock CA2 · A person makes the final gritting decision.<br>
@@ -281,6 +316,7 @@ const SOURCES = {
   tonight: "https://bdaib-hub.pages.dev/data/winter/tonight.csv",
   routes:  "https://bdaib-hub.pages.dev/data/winter/routes.csv",
   plan:    "https://bdaib-hub.pages.dev/data/winter/plan.md",
+  history: "https://bdaib-hub.pages.dev/data/winter/history.csv",
   forecast: "https://api.open-meteo.com/v1/forecast?latitude=53.99,54.04,54.07,53.88,53.92,53.87,54.06,54.11,53.83,53.9&longitude=-7.345,-7.38,-7.44,-7.33,-6.98,-7.54,-7.09,-7.58,-7.08,-6.8&hourly=temperature_2m,soil_temperature_0cm,dew_point_2m,precipitation&forecast_hours=24&timezone=Europe%2FDublin"
 };
 
@@ -557,6 +593,94 @@ function briefForAI(result, generatedAt) {
   return `DATA FETCHED AT: ${generatedAt}\n\nROUTE DECISIONS (computed by code from the plan rules - authoritative):\n${L}\n\nDEPOTS TONIGHT:\n${D}\n\nALERTS:\n${A}`;
 }
 
+/* ===== Phase 3: five winters of history ===== */
+
+const HISTORY_CHECK = { rows: 7560, runs: 439, salt: 1152.5 };       // check figures from the brief
+const TEMP_COLUMNS = ["min_air_c", "min_ground_c", "min_dewpoint_c", "forecast_ground_c"];
+const MAX_VALID_TEMP = 40;                                             // brief: exclude temperatures above 40 C
+
+// Summarise history.csv per route. Bad temperature VALUES are dropped (and counted); the row itself is kept.
+function summariseHistory(rows) {
+  const routes = {}, depots = {}, excluded = [];
+  let runs = 0, salt = 0;
+  const dates = new Set();
+
+  for (const r of rows) {
+    dates.add(r.date);
+    // Drop impossible temperatures, keep the night
+    const t = {};
+    for (const c of TEMP_COLUMNS) {
+      const v = num(r[c]);
+      if (v !== null && v > MAX_VALID_TEMP) { excluded.push({ date: r.date, route: r.route_id, column: c, value: v, note: r.notes || "" }); t[c] = null; }
+      else t[c] = v;
+    }
+    const gritted = String(r.gritted).trim().toLowerCase() === "yes";
+    const s = num(r.salt_t) || 0;
+    const ice = num(r.ice_incidents) || 0;
+    const decision = String(r.decision).trim().toLowerCase();
+
+    const R = routes[r.route_id] = routes[r.route_id] || {
+      id: r.route_id, name: r.route, priority: Number(r.priority), depot: r.depot,
+      nights: 0, runs: 0, salt: 0,
+      iceTreated: 0, iceTreatedNights: 0, iceUntreated: 0, iceUntreatedNights: 0,
+      noSalt: 0, heldStock: 0, frostNights: 0,
+      warmest: null, coldest: null, notes: {}
+    };
+    R.nights++;
+    if (gritted) { R.runs++; R.salt += s; runs++; salt += s; }
+    if (ice > 0) {
+      if (gritted) { R.iceTreated += ice; R.iceTreatedNights++; }
+      else { R.iceUntreated += ice; R.iceUntreatedNights++; }
+    }
+    if (decision === "no salt") R.noSalt++;
+    if (decision === "held back (stock)") R.heldStock++;
+    if (t.min_ground_c !== null && t.min_ground_c <= 0) R.frostNights++;
+    if (t.min_air_c !== null && (!R.warmest || t.min_air_c > R.warmest.air)) R.warmest = { date: r.date, air: t.min_air_c };
+    if (t.min_ground_c !== null && (!R.coldest || t.min_ground_c < R.coldest.ground)) R.coldest = { date: r.date, ground: t.min_ground_c };
+    const note = String(r.notes || "").trim();
+    if (note) R.notes[note] = (R.notes[note] || 0) + 1;
+
+    const D = depots[r.depot] = depots[r.depot] || { depot: r.depot, outDates: new Set(), noSalt: 0, heldStock: 0 };
+    if (num(r.depot_stock_after_t) !== null && num(r.depot_stock_after_t) <= 0) D.outDates.add(r.date);
+    if (decision === "no salt") D.noSalt++;
+    if (decision === "held back (stock)") D.heldStock++;
+  }
+
+  const routeList = Object.values(routes).sort((a, b) => a.id.localeCompare(b.id));
+  routeList.forEach(R => {
+    R.salt = +R.salt.toFixed(2);
+    R.recurringNotes = Object.entries(R.notes).filter(([, n]) => n >= 2).map(([text, n]) => ({ text, n })).sort((a, b) => b.n - a.n);
+  });
+  const depotList = Object.values(depots).map(D => ({ depot: D.depot, outNights: D.outDates.size, noSalt: D.noSalt, heldStock: D.heldStock }))
+                                       .sort((a, b) => b.outNights - a.outNights || a.depot.localeCompare(b.depot));
+  const sorted = [...dates].sort();
+  const totals = { rows: rows.length, runs, salt: +salt.toFixed(2), nights: dates.size, from: sorted[0], to: sorted[sorted.length - 1] };
+  const checks = {
+    rows: totals.rows === HISTORY_CHECK.rows,
+    runs: totals.runs === HISTORY_CHECK.runs,
+    salt: Math.abs(totals.salt - HISTORY_CHECK.salt) < 0.06
+  };
+  return { totals, checks, excluded, routes: routeList, depots: depotList };
+}
+
+// Compact history summary sent to the AI (no raw rows)
+function historyForAI(h) {
+  const t = h.totals;
+  const head = `FIVE WINTERS ${t.from} to ${t.to} (Nov-Mar), one row per route per night (18:00-09:00). ` +
+    `${t.rows} rows, ${t.runs} gritting runs, ${t.salt} t salt. ` +
+    `Excluded temperature values above ${MAX_VALID_TEMP} C: ${h.excluded.length}` +
+    (h.excluded.length ? " (" + h.excluded.map(e => `${e.route} ${e.date} ${e.column}=${e.value}${e.note ? ' note "' + e.note + '"' : ""}`).join("; ") + "; the night itself is kept)" : "") + ".";
+  const R = h.routes.map(r =>
+    `${r.id} ${r.name} | P${r.priority} | ${r.depot} | nights ${r.nights} | runs ${r.runs} | salt ${r.salt} t` +
+    ` | ice on TREATED nights ${r.iceTreated} (${r.iceTreatedNights} nights) | ice on UNTREATED nights ${r.iceUntreated} (${r.iceUntreatedNights} nights)` +
+    ` | no-salt nights ${r.noSalt + r.heldStock} ("no salt" ${r.noSalt}, "held back (stock)" ${r.heldStock}) | ground <=0 C nights ${r.frostNights}` +
+    ` | warmest night (min air) ${r.warmest ? r.warmest.air + " C on " + r.warmest.date : "-"} | coldest ground ${r.coldest ? r.coldest.ground + " C on " + r.coldest.date : "-"}` +
+    (r.recurringNotes.length ? ` | recurring notes: ${r.recurringNotes.map(n => `"${n.text}" x${n.n}`).join(", ")}` : "")
+  ).join("\n");
+  const D = h.depots.map(d => `${d.depot} | nights stock hit 0 t: ${d.outNights} | "no salt" decisions ${d.noSalt} | "held back (stock)" decisions ${d.heldStock}`).join("\n");
+  return `${head}\n\nPER ROUTE:\n${R}\n\nPER DEPOT:\n${D}`;
+}
+
 /* ---------- LOGIC END ---------- */
 
 const SYSTEM_PROMPT = `You are Winter Watch, a decision-support assistant for the County Cavan roads team (fictional). You advise the Duty Engineer; you never dispatch trucks, write to logs, or mark anything as treated. A person makes every final decision.
@@ -570,6 +694,11 @@ Rules for you:
 5. If the question cannot be answered from the data you have, say so plainly.
 
 6. Spare trucks: use the "SPARE crews" figure for each depot. Never work it out yourself from trucks or drivers.
+7. History (FIVE WINTERS block): use only the summary figures given; never invent per-night details that are not in it.
+   - Keep ice on TREATED nights and ice on UNTREATED nights apart. Ice after treatment points to a fault on the route (shade, bridge deck, water across the road - plan section 7), not to the decision or the priority. Ice on untreated nights points to the decision rules or the priority.
+   - Temperature values above 40 C were excluded as sensor errors; the summary already reflects this. Never quote them as real weather.
+   - Say which figures you used and over which period (five winters, Nov-Mar 2020-2025).
+   - If the history block is missing, say the history could not be loaded.
 
 You reply as JSON matching the schema. Stay focused on what was asked:
 - MODE "question": answer ONLY the engineer's question. Mention only routes and depots that matter to it. No full-night rundown, no unrelated warnings.
@@ -899,8 +1028,12 @@ async function run(question, mode) {
 
   out.innerHTML = `<div class="question-echo">Q: ${esc(question)}</div><div class="answer">Thinking…</div>`;
 
+  // History is fetched once per page load; reuse it here
+  let historyText = "FIVE WINTERS: history could not be loaded.";
+  try { historyText = historyForAI(await HISTORY); } catch (e) { /* the AI is told it is missing */ }
+
   const userContent =
-    `<plan>\n${data.plan}\n</plan>\n\n<data>\n${briefForAI(data.result, data.generatedAt)}\n</data>\n\nMODE: ${mode}\nQUESTION FROM THE DUTY ENGINEER:\n${question}`;
+    `<plan>\n${data.plan}\n</plan>\n\n<data>\n${briefForAI(data.result, data.generatedAt)}\n\n${historyText}\n</data>\n\nMODE: ${mode}\nQUESTION FROM THE DUTY ENGINEER:\n${question}`;
 
   let html = "";
   let parsed = null;
@@ -929,6 +1062,90 @@ async function run(question, mode) {
   buttons.forEach(b => b.disabled = false);
 }
 
+
+// ===== Five winters: fetch ONCE when the page opens, summarise in JS, draw table + chart =====
+const HISTORY = fetchText(SOURCES.history).then(t => summariseHistory(parseCSV(t)));
+HISTORY.then(renderHistory).catch(e => {
+  $("history").innerHTML = `<div class="answer err">Could not load history: ${esc(e.message)}</div>`;
+});
+
+function renderHistory(h) {
+  const t = h.totals, c = h.checks;
+  const tick = ok => ok ? `<span class="ok">✔ matches brief</span>` : `<span class="bad">✖ does not match brief</span>`;
+  const checks = `
+    <div class="checks">
+      <div class="check"><div class="val">${t.rows.toLocaleString("en-IE")}</div><div class="lab">rows</div>${tick(c.rows)}</div>
+      <div class="check"><div class="val">${t.runs}</div><div class="lab">gritting runs</div>${tick(c.runs)}</div>
+      <div class="check"><div class="val">${t.salt.toLocaleString("en-IE", { maximumFractionDigits: 2 })} t</div><div class="lab">salt (≈ ${HISTORY_CHECK.salt.toLocaleString("en-IE")} t)</div>${tick(c.salt)}</div>
+      <div class="check"><div class="val">${h.excluded.length}</div><div class="lab">temps &gt; ${MAX_VALID_TEMP} °C excluded</div><span class="lab">value dropped, night kept</span></div>
+    </div>`;
+
+  // Chart: ice incidents per route, treated vs untreated, sorted by total
+  const byIce = [...h.routes].sort((a, b) => (b.iceTreated + b.iceUntreated) - (a.iceTreated + a.iceUntreated) || a.id.localeCompare(b.id));
+  const max = Math.max(1, ...byIce.map(r => r.iceTreated + r.iceUntreated));
+  // segment width is a share of its own bar (the bar itself is already scaled to the max)
+  const seg = (cls, n, r, kind) => n ? `<div class="seg ${cls}" style="flex:${n} 1 0" data-tip="${esc(`${r.id} ${r.name}: ${n} ice incident${n === 1 ? "" : "s"} on ${kind} nights (${kind === "treated" ? r.iceTreatedNights : r.iceUntreatedNights} nights)`)}"></div>` : "";
+  const chart = `
+    <div class="chart-title">Ice incidents per route, five winters</div>
+    <div class="chart-sub">Ice after treatment points to a fault on the route (plan §7); ice on untreated nights points to the decision or priority.</div>
+    <div class="key"><span><i style="background:var(--s-treated)"></i>On treated nights</span><span><i style="background:var(--s-untreated)"></i>On untreated nights</span></div>
+    <div class="bars">${byIce.map(r => {
+      const total = r.iceTreated + r.iceUntreated;
+      return `<div class="lbl"><b>${esc(r.id)}</b> ${esc(r.name)} <small>P${r.priority}</small></div>
+        <div class="track"><div class="stack" style="width:${total / max * 85}%">${seg("t", r.iceTreated, r, "treated")}${seg("u", r.iceUntreated, r, "untreated")}</div>
+        <span class="n">${total ? `${r.iceTreated} + ${r.iceUntreated}` : "0"}</span></div>`;
+    }).join("")}</div>`;
+
+  // Table: per-route summary (brief's columns + extras)
+  const table = `
+    <h3>Per-route summary</h3>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>Route</th><th class="num">P</th><th>Depot</th><th class="num">Nights</th><th class="num">Runs</th><th class="num">Salt t</th>
+        <th class="num">Ice · treated</th><th class="num">Ice · untreated</th><th class="num">No-salt nights</th><th>Warmest night (air)</th><th>Coldest ground</th>
+      </tr></thead>
+      <tbody>${h.routes.map(r => `
+        <tr>
+          <td><b>${esc(r.id)}</b> ${esc(r.name)}</td>
+          <td class="num">${r.priority}</td>
+          <td>${esc(r.depot)}</td>
+          <td class="num">${r.nights}</td>
+          <td class="num">${r.runs}</td>
+          <td class="num">${r.salt}</td>
+          <td class="num">${r.iceTreated} <small class="lab">(${r.iceTreatedNights} n)</small></td>
+          <td class="num">${r.iceUntreated} <small class="lab">(${r.iceUntreatedNights} n)</small></td>
+          <td class="num" title="no salt: ${r.noSalt} · held back (stock): ${r.heldStock}">${r.noSalt + r.heldStock}</td>
+          <td>${r.warmest ? r.warmest.air.toFixed(1) + " °C · " + r.warmest.date : "–"}</td>
+          <td>${r.coldest ? r.coldest.ground.toFixed(1) + " °C · " + r.coldest.date : "–"}</td>
+        </tr>`).join("")}
+      </tbody>
+      <tfoot><tr>
+        <th>Total</th><th></th><th></th><th class="num">${t.rows}</th><th class="num">${t.runs}</th><th class="num">${t.salt}</th>
+        <th class="num">${h.routes.reduce((s, r) => s + r.iceTreated, 0)}</th><th class="num">${h.routes.reduce((s, r) => s + r.iceUntreated, 0)}</th>
+        <th class="num">${h.routes.reduce((s, r) => s + r.noSalt + r.heldStock, 0)}</th><th></th><th></th>
+      </tr></tfoot>
+    </table></div>`;
+
+  // Recurring notes, sensor exclusions and depot stock-outs
+  const notes = h.routes.flatMap(r => r.recurringNotes.map(n => `<div class="alert warn"><b>${esc(r.id)}</b> recurring note ×${n.n}: “${esc(n.text)}”</div>`));
+  const excl = h.excluded.map(e => `<div class="alert err">Excluded sensor value: <b>${esc(e.route)}</b> ${esc(e.date)} ${esc(e.column)} = ${e.value} °C${e.note ? ` (note: “${esc(e.note)}”)` : ""}. Night kept for runs and salt.</div>`);
+  const outs = h.depots.filter(d => d.outNights).map(d => `<div class="alert warn"><b>${esc(d.depot)}</b> hit 0 t of salt on ${d.outNights} nights · “no salt” ${d.noSalt} · “held back (stock)” ${d.heldStock}</div>`);
+  const extras = notes.length + excl.length + outs.length ? `<h3>Worth knowing</h3><div class="hist-notes">${[...excl, ...notes, ...outs].join("")}</div>` : "";
+
+  $("history").innerHTML = checks + chart + table + extras +
+    `<p class="note">Source: history.csv (${t.from} to ${t.to}, ${t.nights} nights × 10 routes), loaded once when the page opened. Summarised in the browser; only this summary is sent to the AI.</p>`;
+}
+
+// Hover tooltip for chart segments
+document.addEventListener("mousemove", e => {
+  const tip = $("tip");
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (!el) { tip.style.display = "none"; return; }
+  tip.textContent = el.getAttribute("data-tip");
+  tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+  tip.style.top = (e.clientY + 14) + "px";
+});
 
 $("callBtn").addEventListener("click", () => run(STANDARD_QUESTION, "overview"));
 $("askBtn").addEventListener("click", () => {
