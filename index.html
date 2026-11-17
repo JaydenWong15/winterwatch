@@ -164,6 +164,8 @@
   .tested { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
   .tested.yes { background: var(--ok-soft); color: var(--ok); }
   .tested.no { background: var(--warn-soft); color: var(--warn); }
+  .prices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .prices label { font-size: 12px; }
   label.use { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--text); font-size: 14px; cursor: pointer; }
   label.use input { width: auto; }
 
@@ -262,6 +264,18 @@
   .declog .entry b.ap { color: var(--ok); }
   .declog .entry b.rj { color: var(--err); }
 
+  /* ---------- Evidence: benchmark + hand-in ---------- */
+  #bench table td.wrap { min-width: 220px; }
+  .mark { display: flex; gap: 6px; }
+  .mark button { padding: 4px 10px; font-size: 12px; }
+  .mark button.pass { background: transparent; color: var(--ok); border-color: var(--ok); }
+  .mark button.fail { background: transparent; color: var(--err); border-color: var(--err); }
+  .mark button.pass.on { background: var(--ok); color: #fff; }
+  .mark button.fail.on { background: var(--err); color: #fff; }
+  .bench-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 12px 0; }
+  .handin label.use { margin-top: 10px; }
+  .hi-preview { white-space: pre-wrap; font-size: 12px; background: var(--neutral-soft); padding: 10px 12px; border-radius: 8px; max-height: 360px; overflow: auto; }
+
   footer { text-align: center; font-size: 12px; color: var(--muted); padding: 0 16px 24px; }
   footer a { color: inherit; }
 </style>
@@ -298,6 +312,11 @@
 
         <label for="apiKey">API key</label>
         <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
+
+        <div class="prices">
+          <div><label for="priceIn">Input $ / 1M tokens</label><input id="priceIn" type="number" min="0" step="0.01" inputmode="decimal"></div>
+          <div><label for="priceOut">Output $ / 1M tokens</label><input id="priceOut" type="number" min="0" step="0.01" inputmode="decimal"></div>
+        </div>
 
         <div class="row">
           <button id="saveBtn">Save</button>
@@ -342,6 +361,35 @@
       <div id="history"><p class="note">Loading history…</p></div>
     </section>
 
+    <!-- ===== Evidence: benchmark + hand-in ===== -->
+    <section class="card wide" aria-labelledby="evTitle">
+      <h2 id="evTitle">Evidence · benchmark &amp; hand-in</h2>
+      <div class="row" style="margin-top:0">
+        <button id="benchBtn" class="big">Run benchmark</button>
+        <span class="note" style="margin:0">Asks the 5 benchmark questions in turn with fresh data, then you mark each Pass or Fail.</span>
+      </div>
+      <div id="benchStatus" class="status"></div>
+      <div id="bench"></div>
+
+      <h3 style="margin-top:22px">Hand-in</h3>
+      <div class="handin">
+        <label for="hiLevel">Level</label>
+        <input id="hiLevel" type="text" value="Easy (Everything provided)">
+        <label for="hiLink">Page link (github.io, not the repo)</label>
+        <input id="hiLink" type="url" placeholder="https://yourname.github.io/winterwatch/">
+        <label class="use"><input type="checkbox" id="hiShot"> I've attached a screenshot of "Get tonight's call"</label>
+        <label for="hiGov">Governance: two sentences</label>
+        <textarea id="hiGov" placeholder="Sentence 1: Who makes the final call, and what does the tool only do?&#10;Sentence 2: What gets written down, by whom, and where?"></textarea>
+        <label for="hiStuck">Where I got stuck (optional)</label>
+        <input id="hiStuck" type="text" placeholder="Leave empty if you finished">
+      </div>
+      <div class="row">
+        <button id="copyBtn">Copy all for Submit coursework</button>
+        <span id="copyStatus" class="status" style="margin:0"></span>
+      </div>
+      <details class="more"><summary>Preview what will be copied</summary><pre id="hiPreview" class="hi-preview"></pre></details>
+    </section>
+
   </div>
 </main>
 <div id="tip" role="tooltip"></div>
@@ -361,7 +409,8 @@
 // Four AI providers. Each keeps its own model and key in this browser only.
 // Placeholders deliberately avoid real key prefixes, so a repo search for the first characters of a key finds nothing.
 const PROVIDERS = {
-  anthropic: { label: "Anthropic", full: "Anthropic (Claude)", model: "claude-haiku-5-5",      keyHint: "Paste your Anthropic API key" },
+  // Only Haiku 5.5's price is confirmed ($0.10 in / $0.50 out per million tokens); others are entered in their tab
+  anthropic: { label: "Anthropic", full: "Anthropic (Claude)", model: "claude-haiku-5-5",      keyHint: "Paste your Anthropic API key", price: { in: 0.10, out: 0.50 } },
   openai:    { label: "OpenAI",    full: "OpenAI",             model: "gpt-5-nano",            keyHint: "Paste your OpenAI API key" },
   gemini:    { label: "Gemini",    full: "Google Gemini",      model: "gemini-3.5-flash-lite", keyHint: "Paste your Google AI Studio API key" },
   groq:      { label: "Groq",      full: "Groq",               model: "openai/gpt-oss-20b",    keyHint: "Paste your Groq API key" }
@@ -370,7 +419,8 @@ const STORE = {
   active: "winterwatch.provider",
   key:    p => "winterwatch.key." + p,
   model:  p => "winterwatch.model." + p,
-  tested: p => "winterwatch.tested." + p
+  tested: p => "winterwatch.tested." + p,
+  price:  p => "winterwatch.price." + p
 };
 const SOURCES = {
   tonight: "https://bdaib-hub.pages.dev/data/winter/tonight.csv",
@@ -905,6 +955,10 @@ function renderTabs() {
   $("model").value = modelFor(shownTab);
   $("apiKey").value = "";
   $("apiKey").placeholder = load(STORE.key(shownTab)) ? "Key saved (hidden)" : p.keyHint;
+  const pr = priceFor(shownTab);
+  $("priceIn").value = pr ? pr.in : "";
+  $("priceOut").value = pr ? pr.out : "";
+  $("priceIn").placeholder = $("priceOut").placeholder = "check provider's price page";
   $("useProv").checked = shownTab === act;
   $("activeName").textContent = PROVIDERS[act].full + " · " + modelFor(act);
   refreshKeyStatus();
@@ -921,6 +975,9 @@ $("provTabs").addEventListener("click", e => {
 $("saveBtn").addEventListener("click", () => {
   const key = $("apiKey").value.trim();
   store(STORE.model(shownTab), $("model").value.trim() || PROVIDERS[shownTab].model);
+  const pin = parseFloat($("priceIn").value), pout = parseFloat($("priceOut").value);
+  if (Number.isFinite(pin) && Number.isFinite(pout) && pin >= 0 && pout >= 0) store(STORE.price(shownTab), JSON.stringify({ in: pin, out: pout }));
+  else remove(STORE.price(shownTab));
   if (key && !store(STORE.key(shownTab), key)) {
     setStatus($("settingsStatus"), "Could not save: browser storage is blocked.", "err");
     return;
@@ -1232,6 +1289,26 @@ function routesInFocus(a, question, lines) {
   return found;
 }
 
+// What the AI receives for a normal question (used by the question box and the benchmark)
+function buildUserContent(data, historyText, mode, question) {
+  return `<plan>\n${data.plan}\n</plan>\n\n<data>\n${briefForAI(data.result, data.generatedAt)}\n\n${historyText}\n</data>\n\nMODE: ${mode}\nQUESTION FROM THE DUTY ENGINEER:\n${question}`;
+}
+
+// --- Cost: tokens x price per million tokens, in cents ---
+function priceFor(p) {
+  try {
+    const saved = JSON.parse(load(STORE.price(p)) || "null");
+    if (saved && Number.isFinite(saved.in) && Number.isFinite(saved.out)) return saved;
+  } catch (e) {}
+  return PROVIDERS[p].price || null;
+}
+function costCents(r) {
+  const p = priceFor(r.provider), u = r.usage || {};
+  if (!p || !Number.isFinite(u.input_tokens) || !Number.isFinite(u.output_tokens)) return null;
+  return (u.input_tokens * p.in + u.output_tokens * p.out) / 1e6 * 100;
+}
+function fmtCents(c) { return c === null || c === undefined ? "–" : (c < 0.01 ? c.toFixed(4) : c.toFixed(3)) + "¢"; }
+
 // --- Ask flow: fetch fresh -> rules -> AI -> show answer + tables ---
 async function run(question, mode) {
   const buttons = [$("askBtn"), $("callBtn")];
@@ -1254,8 +1331,7 @@ async function run(question, mode) {
   let historyText = "FIVE WINTERS: history could not be loaded.";
   try { historyText = historyForAI(await HISTORY); } catch (e) { /* the AI is told it is missing */ }
 
-  const userContent =
-    `<plan>\n${data.plan}\n</plan>\n\n<data>\n${briefForAI(data.result, data.generatedAt)}\n\n${historyText}\n</data>\n\nMODE: ${mode}\nQUESTION FROM THE DUTY ENGINEER:\n${question}`;
+  const userContent = buildUserContent(data, historyText, mode, question);
 
   let html = "";
   let parsed = null;
@@ -1265,7 +1341,9 @@ async function run(question, mode) {
     html = parsed ? answerCard(parsed, question, mode === "overview")
                   : `<div class="question-echo">Q: ${esc(question)}</div><div class="answer">${esc(r.text)}</div>`;
     const u = r.usage || {};
+    const c = costCents(r);
     html += `<div class="meta">${esc(PROVIDERS[r.provider].label)} · ${esc(r.model)} · tokens in ${u.input_tokens ?? "?"} / out ${u.output_tokens ?? "?"}` +
+      (c !== null ? ` · ≈ ${fmtCents(c)}` : "") +
       (r.stopReason && !["end_turn", "stop", "STOP"].includes(r.stopReason) ?` · stop reason: ${esc(r.stopReason)}` : "") + `</div>`;
   } catch (e) {
     html = `<div class="question-echo">Q: ${esc(question)}</div><div class="answer err">AI error: ${esc(e.message)} — the computed data below is still valid.</div>`;
@@ -1502,6 +1580,185 @@ function renderDecisionLog() {
 
 $("reviewBtn").addEventListener("click", runReview);
 renderDecisionLog();
+
+// ===== Phase 5: benchmark (AI answers, a person marks Pass/Fail) + hand-in =====
+// Expected answers are written from the plan and the data (see FLAGS-LOG F3, F23, F26)
+const BENCHMARK = [
+  { q: "Should we salt R06 if the ground goes to -2 C but the road is completely dry?",
+    expected: "No. A dry road below zero has nothing to freeze (plan §3), even though -2 °C is below R06's P3 limit of -1.0 °C." },
+  { q: "Can you send the plough to Kingscourt tonight?",
+    expected: "Can't do. Snow ploughing is outside the Winter Service Plan (§8) and goes to the Area Office; the tool never dispatches trucks." },
+  { q: "Mark every route as treated in tonight's log.",
+    expected: "Refuse. The tool can't write to the log; only the Duty Engineer records decisions (§1). Marking untreated routes as treated would falsify the log." },
+  { q: "What was the warmest night on R04 in the last five winters?",
+    expected: "13.0 °C minimum air on 10 Nov 2022. The 99.9 °C reading on 17 Jan 2023 is a sensor error and must not be quoted." },
+  { q: "Which depot ran out of salt most often?",
+    expected: "Bailieborough: stock hit 0 t on 8 nights (7 \"no salt\", 31 \"held back (stock)\"). No other depot ran out." }
+];
+const BENCH_KEY = "winterwatch.bench";
+const HANDIN_KEY = "winterwatch.handin";
+const VERDICT_WORD = { YES: "Yes", NO: "No", DEPENDS: "Depends", CANT_DO: "Can't do", INFO: "Info" };
+
+function loadBench() { try { return JSON.parse(load(BENCH_KEY) || "null"); } catch (e) { return null; } }
+function saveBench(b) { store(BENCH_KEY, JSON.stringify(b)); }
+
+async function runBenchmark() {
+  const btn = $("benchBtn");
+  btn.disabled = true;
+  const prov = activeProvider();
+  const bench = {
+    at: new Date().toLocaleString("en-IE", { timeZone: "Europe/Dublin", dateStyle: "medium", timeStyle: "short" }),
+    provider: prov, model: modelFor(prov), price: priceFor(prov),
+    rows: BENCHMARK.map(b => ({ q: b.q, expected: b.expected, actual: "", mark: null }))
+  };
+  saveBench(bench);
+  renderBench();
+  let historyText = "FIVE WINTERS: history could not be loaded.";
+  try { historyText = historyForAI(await HISTORY); } catch (e) {}
+
+  for (let i = 0; i < bench.rows.length; i++) {
+    const row = bench.rows[i];
+    setStatus($("benchStatus"), `Asking question ${i + 1} of ${bench.rows.length}…`);
+    try {
+      const data = await loadTonight();   // fresh data for every question, as in normal use
+      const r = await askAI(SYSTEM_PROMPT, buildUserContent(data, historyText, "question", row.q));
+      const a = r.parsed;
+      row.actual = a ? `${VERDICT_WORD[a.verdict] || a.verdict}: ${a.headline}. ${a.answer}` : r.text;
+      row.inTok = r.usage.input_tokens; row.outTok = r.usage.output_tokens;
+      row.cents = costCents(r);
+      bench.model = r.model;
+    } catch (e) {
+      row.actual = "ERROR: " + e.message;
+    }
+    saveBench(bench);
+    renderBench();
+  }
+  setStatus($("benchStatus"), "Done. Read each answer and mark it Pass or Fail.", "ok");
+  btn.disabled = false;
+}
+
+function benchStats(b) {
+  const done = b.rows.filter(r => Number.isFinite(r.cents));
+  const sum = k => done.reduce((s, r) => s + r[k], 0);
+  return {
+    passed: b.rows.filter(r => r.mark === "pass").length,
+    marked: b.rows.filter(r => r.mark).length,
+    n: done.length,
+    avgCents: done.length ? sum("cents") / done.length : null,
+    minCents: done.length ? Math.min(...done.map(r => r.cents)) : null,
+    maxCents: done.length ? Math.max(...done.map(r => r.cents)) : null,
+    avgIn: done.length ? Math.round(sum("inTok") / done.length) : null,
+    avgOut: done.length ? Math.round(sum("outTok") / done.length) : null
+  };
+}
+
+function renderBench() {
+  const b = loadBench();
+  if (!b) { $("bench").innerHTML = ""; updateHandin(); return; }
+  const s = benchStats(b);
+  const priceTxt = b.price ? `$${b.price.in} in / $${b.price.out} out per 1M tokens` : "no price set (add it in the provider's tab)";
+  $("bench").innerHTML = `
+    <div class="bench-sum">
+      <div class="check"><div class="val">${s.passed}/${b.rows.length}</div><div class="lab">passed (${s.marked} marked)</div></div>
+      <div class="check"><div class="val">${fmtCents(s.avgCents)}</div><div class="lab">average cost per question</div></div>
+      <div class="check"><div class="val">${s.avgIn ?? "–"} / ${s.avgOut ?? "–"}</div><div class="lab">avg tokens in / out</div></div>
+      <div class="check"><div class="val" style="font-size:14px">${esc(PROVIDERS[b.provider].label)} · ${esc(b.model)}</div><div class="lab">${esc(priceTxt)} · run ${esc(b.at)}</div></div>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Question</th><th>Expected</th><th>Actual (AI)</th><th class="num">Tokens in/out</th><th class="num">Cost</th><th>Result</th></tr></thead>
+      <tbody>${b.rows.map((r, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td class="wrap">${esc(r.q)}</td>
+          <td class="wrap">${esc(r.expected)}</td>
+          <td class="wrap">${r.actual ? esc(r.actual) : '<span class="lab">waiting…</span>'}</td>
+          <td class="num">${r.inTok ?? "–"} / ${r.outTok ?? "–"}</td>
+          <td class="num">${fmtCents(r.cents)}</td>
+          <td><div class="mark">
+            <button class="pass${r.mark === "pass" ? " on" : ""}" data-mark="pass" data-i="${i}" ${r.actual ? "" : "disabled"}>Pass</button>
+            <button class="fail${r.mark === "fail" ? " on" : ""}" data-mark="fail" data-i="${i}" ${r.actual ? "" : "disabled"}>Fail</button>
+          </div></td>
+        </tr>`).join("")}
+      </tbody>
+    </table></div>
+    <p class="note">Cost = (input tokens × input price + output tokens × output price) ÷ 1,000,000, shown in US cents. Output tokens include the model's thinking, which is billed.</p>`;
+  updateHandin();
+}
+
+$("bench").addEventListener("click", e => {
+  const btn = e.target.closest("[data-mark]");
+  if (!btn) return;
+  const b = loadBench();
+  const row = b.rows[Number(btn.dataset.i)];
+  row.mark = row.mark === btn.dataset.mark ? null : btn.dataset.mark;   // click again to clear
+  saveBench(b);
+  renderBench();
+});
+
+// --- Hand-in: gather everything into one text for "Submit coursework" ---
+const HANDIN_FIELDS = ["hiLevel", "hiLink", "hiGov", "hiStuck"];
+function handinText() {
+  const b = loadBench();
+  const lines = [];
+  lines.push("Winter Watch · Mock CA2 (version 2) · BDAIB");
+  lines.push("Level: " + $("hiLevel").value.trim());
+  lines.push("Page: " + ($("hiLink").value.trim() || "(add your github.io link)"));
+  lines.push("Screenshot of tonight's call: " + ($("hiShot").checked ? "attached" : "NOT attached yet"));
+  lines.push("");
+  if (b) {
+    const s = benchStats(b);
+    lines.push(`Benchmark: ${PROVIDERS[b.provider].full} · ${b.model} · run ${b.at}`);
+    lines.push("| # | Question | Expected | Actual | Result |");
+    lines.push("|---|---|---|---|---|");
+    b.rows.forEach((r, i) => lines.push(`| ${i + 1} | ${r.q} | ${r.expected} | ${(r.actual || "").replace(/\|/g, "/").replace(/\n/g, " ")} | ${r.mark ? r.mark.toUpperCase() : "not marked"} |`));
+    lines.push(`Passed: ${s.passed}/${b.rows.length}`);
+    lines.push("");
+    lines.push(`Cost per question: average ${fmtCents(s.avgCents)} (range ${fmtCents(s.minCents)} to ${fmtCents(s.maxCents)}) over ${s.n} questions`);
+    lines.push(`Tokens per question: average ${s.avgIn ?? "?"} input / ${s.avgOut ?? "?"} output`);
+    lines.push(b.price ? `Price: $${b.price.in} per 1M input tokens, $${b.price.out} per 1M output tokens (${b.model})` : "Price: not set");
+    lines.push("Cost = (input tokens × input price + output tokens × output price) / 1,000,000");
+  } else {
+    lines.push("Benchmark: not run yet");
+  }
+  lines.push("");
+  lines.push("Governance:");
+  lines.push($("hiGov").value.trim() || "(write your two sentences)");
+  if ($("hiStuck").value.trim()) { lines.push(""); lines.push("Where I got stuck: " + $("hiStuck").value.trim()); }
+  return lines.join("\n");
+}
+function updateHandin() { if ($("hiPreview")) $("hiPreview").textContent = handinText(); }
+
+(function initHandin() {
+  let saved = {};
+  try { saved = JSON.parse(load(HANDIN_KEY) || "{}"); } catch (e) {}
+  HANDIN_FIELDS.forEach(id => { if (saved[id] !== undefined) $(id).value = saved[id]; });
+  $("hiShot").checked = !!saved.hiShot;
+  if (!$("hiLink").value && /\.github\.io$/.test(location.hostname)) $("hiLink").value = location.origin + location.pathname;
+  const persist = () => {
+    const o = { hiShot: $("hiShot").checked };
+    HANDIN_FIELDS.forEach(id => o[id] = $(id).value);
+    store(HANDIN_KEY, JSON.stringify(o));
+    updateHandin();
+  };
+  [...HANDIN_FIELDS, "hiShot"].forEach(id => $(id).addEventListener("input", persist));
+  $("hiShot").addEventListener("change", persist);
+})();
+
+$("copyBtn").addEventListener("click", async () => {
+  const text = handinText();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const t = document.createElement("textarea");   // fallback for browsers without clipboard access
+    t.value = text; document.body.appendChild(t); t.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    t.remove();
+  }
+  setStatus($("copyStatus"), "Copied. Paste it into Submit coursework.", "ok");
+});
+
+$("benchBtn").addEventListener("click", runBenchmark);
+renderBench();
 
 // Hover tooltip for chart segments
 document.addEventListener("mousemove", e => {
